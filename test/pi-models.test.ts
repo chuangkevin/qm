@@ -14,15 +14,27 @@ import {
   SELECTABLE_BASE_MODELS,
   contextTokenBudgetForModel,
 } from "../src/model/pi-models.ts";
+import { builtInModelCatalog } from "../src/model/model-catalog.ts";
+
+const OPENAI_CODEX_ALIASES = [
+  "openai-codex/gpt-5.6-sol",
+  "openai-codex/gpt-5.6-terra",
+  "openai-codex/gpt-5.6-luna",
+] as const;
 
 test("every selectable base model resolves against the pi-ai registry", () => {
   for (const m of SELECTABLE_BASE_MODELS) {
     const model = getRequiredModel(m.id);
-    assert.equal(model.id, m.id);
-    assert.ok(
-      ["anthropic", "openai", "openrouter"].includes(String(model.provider)),
-      `${m.id} has unexpected provider ${model.provider}`,
-    );
+    if (m.id.startsWith("openai-codex/")) {
+      assert.equal(model.id, m.id.slice("openai-codex/".length));
+      assert.equal(model.provider, "openai-codex");
+    } else {
+      assert.equal(model.id, m.id);
+      assert.ok(
+        ["anthropic", "openai", "openrouter"].includes(String(model.provider)),
+        `${m.id} has unexpected provider ${model.provider}`,
+      );
+    }
   }
 });
 
@@ -31,8 +43,8 @@ test("selectable models span providers (multi-provider is wired)", () => {
   assert.ok(providers.has("anthropic"), "expected at least one Anthropic model");
   assert.ok(providers.has("openai"), "expected at least one OpenAI model (gpt-5.6)");
   assert.ok(providers.has("openrouter"), "expected an OpenRouter-hosted open-model option");
+  assert.ok(providers.has("openai-codex"), "expected ChatGPT openai-codex aliases");
 });
-
 test("unknown models are not silently accepted", () => {
   assert.equal(resolveModel("claude-not-a-real-model"), undefined);
   assert.throws(() => getRequiredModel("claude-not-a-real-model"), /Unsupported model/);
@@ -98,6 +110,9 @@ test("the curated catalog contains only current model families", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "openai-codex/gpt-5.6-sol",
+      "openai-codex/gpt-5.6-terra",
+      "openai-codex/gpt-5.6-luna",
       "openrouter/auto",
     ],
   );
@@ -174,4 +189,71 @@ test("context token budget is half of each model's real input room", () => {
     const budget = contextTokenBudgetForModel(m.id);
     assert.ok(budget !== undefined && budget >= 60_000, `${m.id} budget ${budget} suspiciously small`);
   }
+});
+
+test("openai-codex aliases resolve to ChatGPT provider with bare runtime ids", () => {
+  for (const alias of OPENAI_CODEX_ALIASES) {
+    const bare = alias.slice("openai-codex/".length);
+    const model = getRequiredModel(alias);
+    assert.equal(model.id, bare);
+    assert.equal(model.provider, "openai-codex");
+    assert.equal(model.api, "openai-codex-responses");
+    assert.equal(model.baseUrl, "https://chatgpt.com/backend-api");
+    assert.match(model.name, /ChatGPT/);
+    assert.match(SELECTABLE_BASE_MODELS.find((m) => m.id === alias)!.name, /ChatGPT/);
+  }
+  const platform = getRequiredModel("gpt-5.6-sol");
+  assert.equal(platform.provider, "openai");
+  assert.equal(platform.api, "openai-responses");
+  assert.equal(platform.id, "gpt-5.6-sol");
+  assert.equal(getRequiredModel("gpt-5.6-terra").provider, "openai");
+  assert.equal(getRequiredModel("gpt-5.6-luna").provider, "openai");
+});
+
+test("openai-codex aliases are only serviceable when openai-codex OAuth is available", () => {
+  const openaiOnly = { anthropic: false, openai: true, openrouter: false };
+  const codexOnly = { anthropic: false, openai: false, openrouter: false, "openai-codex": true };
+  const both = { anthropic: false, openai: true, openrouter: false, "openai-codex": true };
+  for (const alias of OPENAI_CODEX_ALIASES) {
+    assert.equal(modelServiceable(alias, openaiOnly), false);
+    assert.equal(modelServiceable(alias, codexOnly), true);
+    assert.equal(modelServiceable(alias, both), true);
+  }
+  assert.equal(modelServiceable("gpt-5.6-sol", openaiOnly), true);
+  assert.equal(modelServiceable("gpt-5.6-sol", codexOnly), false);
+});
+
+test("openai-codex aliases are supported by pi and mock only", () => {
+  for (const alias of OPENAI_CODEX_ALIASES) {
+    assert.equal(modelSupportedByHarness(alias, "pi"), true);
+    assert.equal(modelSupportedByHarness(alias, "mock"), true);
+    assert.equal(modelSupportedByHarness(alias, "opencode"), false);
+    assert.equal(modelSupportedByHarness(alias, "codex"), false);
+    assert.equal(modelSupportedByHarness(alias, "claude"), false);
+  }
+  assert.equal(modelSupportedByHarness("gpt-5.6-sol", "pi"), true);
+  assert.equal(modelSupportedByHarness("gpt-5.6-sol", "codex"), true);
+  assert.equal(modelSupportedByHarness("gpt-5.6-sol", "opencode"), true);
+});
+
+test("built-in catalog lists openai-codex aliases with ChatGPT display names", () => {
+  const catalog = builtInModelCatalog();
+  for (const alias of OPENAI_CODEX_ALIASES) {
+    const entry = catalog.find((model) => model.id === alias);
+    assert.ok(entry, `missing catalog entry ${alias}`);
+    assert.equal(entry.provider, "openai-codex");
+    assert.match(entry.name, /ChatGPT/);
+  }
+  assert.equal(catalog.find((model) => model.id === "gpt-5.6-sol")?.provider, "openai");
+});
+
+test("openai-codex bases use the ChatGPT Luna alias as auxiliary, never Platform Luna", () => {
+  assert.equal(auxiliaryModelForProvider("openai-codex"), "openai-codex/gpt-5.6-luna");
+  assert.equal(auxiliaryModelFor("openai-codex/gpt-5.6-sol"), "openai-codex/gpt-5.6-luna");
+  assert.equal(auxiliaryModelFor("openai-codex/gpt-5.6-terra"), "openai-codex/gpt-5.6-luna");
+  assert.equal(auxiliaryModelFor("openai-codex/gpt-5.6-luna"), "openai-codex/gpt-5.6-luna");
+  assert.equal(auxiliaryModelFor("gpt-5.6-sol"), "gpt-5.6-luna");
+  assert.equal(getRequiredModel(auxiliaryModelFor("openai-codex/gpt-5.6-sol")).provider, "openai-codex");
+  assert.notEqual(auxiliaryModelFor("openai-codex/gpt-5.6-sol"), "gpt-5.6-luna");
+  assert.notEqual(auxiliaryModelFor("openai-codex/gpt-5.6-sol"), "openai-codex/gpt-5.6-sol");
 });

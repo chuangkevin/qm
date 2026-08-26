@@ -668,3 +668,77 @@ test("webui-models is an org-wide string-list read back via admin GET and surfac
     await srv.close();
   }
 });
+
+function startWithProviderKeys(keys: {
+  anthropic?: boolean;
+  openai?: boolean;
+  openrouter?: boolean;
+}): { base: string; built: BuiltApp; close: () => Promise<void> } {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "admin-res-codex-")),
+      deploymentLayerDir: brokeredLayer(),
+      ...(keys.openai ? { openaiApiKey: "sk-platform-only" } : {}),
+      ...(keys.anthropic ? { anthropicApiKey: "sk-anthropic" } : {}),
+      ...(keys.openrouter ? { openrouterApiKey: "sk-openrouter" } : {}),
+    }),
+  );
+  const server = createInsecureTestServer(built.app, {
+    config: built.config,
+    admin: built.admin,
+    auditLog: built.auditLog,
+    acl: built.acl,
+    modelCredentials: built.modelCredentials,
+    harnessId: "pi",
+    providerKeys: {
+      anthropic: Boolean(keys.anthropic),
+      openai: Boolean(keys.openai),
+      openrouter: Boolean(keys.openrouter),
+    },
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  return { base, built, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test("runtime Apply accepts openai-codex aliases when managed OAuth availability is true", async () => {
+  const srv = startWithProviderKeys({ openai: true });
+  try {
+    srv.built.config.setApprovedHarnesses(["pi"]);
+    const original = srv.built.openaiCodexCredentials.isConfigured.bind(srv.built.openaiCodexCredentials);
+    srv.built.openaiCodexCredentials.isConfigured = async () => true;
+    assert.equal((await srv.built.modelCredentials.availability())["openai-codex"], true);
+
+    const ok = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/runtime`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ harnessId: "pi", modelId: "openai-codex/gpt-5.6-sol" }),
+    });
+    assert.equal(ok.status, 200, await ok.text());
+    const saved = srv.built.config.getRuntimeSelection("org:default-org");
+    assert.equal(saved?.harnessId, "pi");
+    assert.equal(saved?.modelId, "openai-codex/gpt-5.6-sol");
+    srv.built.openaiCodexCredentials.isConfigured = original;
+  } finally {
+    await srv.close();
+  }
+});
+
+test("runtime Apply rejects openai-codex aliases when only Platform openai is configured", async () => {
+  const srv = startWithProviderKeys({ openai: true });
+  try {
+    srv.built.config.setApprovedHarnesses(["pi"]);
+    assert.equal((await srv.built.modelCredentials.availability())["openai-codex"], false);
+
+    const bad = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/runtime`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ harnessId: "pi", modelId: "openai-codex/gpt-5.6-sol" }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { message: string }).message, /serviceable|provider key/i);
+    assert.equal(srv.built.config.getRuntimeSelection("org:default-org"), null);
+  } finally {
+    await srv.close();
+  }
+});

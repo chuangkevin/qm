@@ -1,6 +1,6 @@
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
-import { MODEL_PROVIDERS, type ModelProvider, type ModelProviderAvailability } from "./pi-models.ts";
+import { isModelProvider, MODEL_PROVIDERS, type ModelProvider, type ModelProviderAvailability } from "./pi-models.ts";
 
 export interface StoredModelCredential {
   provider: ModelProvider;
@@ -26,10 +26,15 @@ export interface ModelCredentialStore {
   availability(): Promise<ModelProviderAvailability>;
 }
 
+function assertApiKeyProvider(provider: string): asserts provider is ModelProvider {
+  if (!isModelProvider(provider)) throw new Error(`Unsupported model provider: ${provider}`);
+}
+
 export function createModelCredentialStore(input: {
   backing: DurableMap<StoredModelCredential>;
   keyMaterial: string | Buffer;
   fallback?: Partial<Record<ModelProvider, string>>;
+  openaiCodexConfigured?: () => Promise<boolean>;
 }): ModelCredentialStore {
   const key = deriveConnectorKey(input.keyMaterial, "model-credentials");
 
@@ -39,12 +44,14 @@ export function createModelCredentialStore(input: {
 
   return {
     async resolve(provider) {
+      assertApiKeyProvider(provider);
       const saved = await record(provider);
       if (saved?.disabled) return null;
       return saved?.secretEnc ? decryptSecret(saved.secretEnc, key) : input.fallback?.[provider]?.trim() || null;
     },
 
     async set(provider, apiKey, updatedBy) {
+      assertApiKeyProvider(provider);
       const secret = apiKey.trim();
       if (!secret) throw new Error("API key is required");
       const actor = updatedBy.trim();
@@ -59,6 +66,7 @@ export function createModelCredentialStore(input: {
     },
 
     async delete(provider, updatedBy) {
+      assertApiKeyProvider(provider);
       await input.backing.put(provider, {
         provider,
         disabled: true,
@@ -97,11 +105,15 @@ export function createModelCredentialStore(input: {
 
     async availability() {
       const statuses = await this.statuses();
-      return {
+      const availability: ModelProviderAvailability = {
         anthropic: statuses.find((status) => status.provider === "anthropic")!.configured,
         openai: statuses.find((status) => status.provider === "openai")!.configured,
         openrouter: statuses.find((status) => status.provider === "openrouter")!.configured,
       };
+      if (input.openaiCodexConfigured) {
+        availability["openai-codex"] = await input.openaiCodexConfigured();
+      }
+      return availability;
     },
   };
 }

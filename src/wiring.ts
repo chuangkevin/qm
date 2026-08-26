@@ -164,6 +164,10 @@ import { createPostgresEgressAuditSink } from "./admin/postgres-egress-audit-sin
 import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord } from "./connectors/consent-link.ts";
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
+import {
+  createOpenAICodexCredentialStore,
+  type OpenAICodexCredentialStore,
+} from "./model/openai-codex-credential-store.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
@@ -327,6 +331,7 @@ export interface BuiltApp {
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
   modelCredentials: ModelCredentialStore;
+  openaiCodexCredentials: OpenAICodexCredentialStore;
   customProviders: CustomProviderStore;
   refreshCustomProviders: () => Promise<void>;
   mcpServers: McpServerStore;
@@ -375,6 +380,41 @@ export interface BuiltApp {
   slackCore: SlackCoreClient;
 }
 
+export async function resolveModelProviderKeys(input: {
+  modelCredentials: ModelCredentialStore;
+  openaiCodexCredentials: Pick<OpenAICodexCredentialStore, "resolveAccessToken">;
+  customProviders: Pick<CustomProviderStore, "enabled" | "resolveKey">;
+}): Promise<Record<string, string>> {
+  const [anthropic, openai, openrouter, enabledCustom, openaiCodex] = await Promise.all([
+    input.modelCredentials.resolve("anthropic"),
+    input.modelCredentials.resolve("openai"),
+    input.modelCredentials.resolve("openrouter"),
+    input.customProviders.enabled(),
+    input.openaiCodexCredentials.resolveAccessToken(),
+  ]);
+  const customKeys = Object.fromEntries(
+    (
+      await Promise.all(
+        enabledCustom.map(async (p) => {
+          try {
+            return [p.id, await input.customProviders.resolveKey(p.id)] as const;
+          } catch (e) {
+            console.error(`[model] custom provider ${p.id}: key unreadable: ${errMessage(e)}`);
+            return [p.id, null] as const;
+          }
+        }),
+      )
+    ).filter(([, key]) => key),
+  );
+  return {
+    ...(anthropic ? { anthropic } : {}),
+    ...(openai ? { openai } : {}),
+    ...(openrouter ? { openrouter } : {}),
+    ...(openaiCodex ? { "openai-codex": openaiCodex } : {}),
+    ...customKeys,
+  };
+}
+
 export function buildApp(
   config: Config,
   overrides: {
@@ -412,7 +452,16 @@ export function buildApp(
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string): DurableMap<T> =>
     pgArtifactMap ? pgArtifactMap.map<T>(table) : createMemoryMap<T>();
+  const advisoryLock: AdvisoryLock = pgArtifactMap
+    ? createPostgresAdvisoryLock(pgArtifactMap.pool)
+    : createMemoryAdvisoryLock();
   setProviderBaseUrls(config.providerBaseUrls);
+  const openaiCodexCredentials = createOpenAICodexCredentialStore({
+    backing: artifactMap("openai_codex_oauth"),
+    keyMaterial: config.connectorSecretKey ?? randomBytes(32),
+    fetch: overrides.modelCredentialFetch ?? fetch,
+    advisoryLock,
+  });
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
@@ -421,15 +470,13 @@ export function buildApp(
       ...(config.openaiApiKey ? { openai: config.openaiApiKey } : {}),
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
+    openaiCodexConfigured: () => openaiCodexCredentials.isConfigured(),
   });
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
   void identity.hydrate();
   const leaderLease: LeaderLease = pgArtifactMap
     ? createPostgresLeaderLease(pgArtifactMap.pool)
     : createNoopLeaderLease();
-  const advisoryLock: AdvisoryLock = pgArtifactMap
-    ? createPostgresAdvisoryLock(pgArtifactMap.pool)
-    : createMemoryAdvisoryLock();
   const configStore = createMemoryConfigStore(config.orgId, {
     connectorClients: artifactMap<StoredConnectorClient>("connector_clients"),
     souls: artifactMap<PersistedSoul>("soul_configs"),
@@ -726,36 +773,12 @@ export function buildApp(
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
-  const resolveModelProviderKeys = async () => {
-    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
-      modelCredentials.resolve("anthropic"),
-      modelCredentials.resolve("openai"),
-      modelCredentials.resolve("openrouter"),
-      customProviders.enabled(),
-    ]);
-    const customKeys = Object.fromEntries(
-      (
-        await Promise.all(
-          enabledCustom.map(async (p) => {
-            try {
-              return [p.id, await customProviders.resolveKey(p.id)] as const;
-            } catch (e) {
-              // A corrupt/undecryptable custom key must degrade that one
-              // provider, never the whole turn (built-ins included).
-              console.error(`[model] custom provider ${p.id}: key unreadable: ${errMessage(e)}`);
-              return [p.id, null] as const;
-            }
-          }),
-        )
-      ).filter(([, key]) => key),
-    );
-    return {
-      ...(anthropic ? { anthropic } : {}),
-      ...(openai ? { openai } : {}),
-      ...(openrouter ? { openrouter } : {}),
-      ...customKeys,
-    };
-  };
+  const resolveProviderKeys = async () =>
+    resolveModelProviderKeys({
+      modelCredentials,
+      openaiCodexCredentials,
+      customProviders,
+    });
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
@@ -765,7 +788,7 @@ export function buildApp(
       createPiHarness({
         ...piHarnessConfigOptions(config),
         resolveBaseModelId: orgBaseModelId,
-        resolveProviderKeys: resolveModelProviderKeys,
+        resolveProviderKeys,
         signals: runSignals,
         mcpTools,
       }),
@@ -1482,6 +1505,7 @@ export function buildApp(
     secretDrops,
     modelGateway,
     modelCredentials,
+    openaiCodexCredentials,
     customProviders,
     refreshCustomProviders,
     mcpServers,
@@ -1550,6 +1574,7 @@ export function serverDeps(
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),
     providerKeys: providerKeysPresent(config),
     modelCredentials: built.modelCredentials,
+    openaiCodexCredentials: built.openaiCodexCredentials,
     customProviders: built.customProviders,
     refreshCustomProviders: built.refreshCustomProviders,
     mcpServers: built.mcpServers,

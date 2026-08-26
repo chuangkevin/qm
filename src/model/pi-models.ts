@@ -14,6 +14,8 @@ export type HarnessId = (typeof HARNESS_IDS)[number];
 export const MODEL_PROVIDERS = ["anthropic", "openai", "openrouter"] as const;
 export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
 
+const OPENAI_CODEX_ALIAS_PREFIX = "openai-codex/";
+
 export function isModelProvider(value: unknown): value is ModelProvider {
   return typeof value === "string" && (MODEL_PROVIDERS as readonly string[]).includes(value);
 }
@@ -88,6 +90,31 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     auxiliary: true,
     clone: { ...GPT_56_CLONE, input: 1, output: 6 },
   },
+  {
+    id: "openai-codex/gpt-5.6-sol",
+    name: "GPT-5.6 Sol (ChatGPT)",
+    fastMode: false,
+    webui: true,
+    base: true,
+    clone: { ...GPT_56_CLONE, input: 5, output: 30 },
+  },
+  {
+    id: "openai-codex/gpt-5.6-terra",
+    name: "GPT-5.6 Terra (ChatGPT)",
+    fastMode: false,
+    webui: true,
+    base: true,
+    clone: { ...GPT_56_CLONE, input: 2.5, output: 15 },
+  },
+  {
+    id: "openai-codex/gpt-5.6-luna",
+    name: "GPT-5.6 Luna (ChatGPT)",
+    fastMode: false,
+    webui: true,
+    base: true,
+    auxiliary: true,
+    clone: { ...GPT_56_CLONE, input: 1, output: 6 },
+  },
   { id: "openrouter/auto", name: "OpenRouter Auto", fastMode: false, webui: true, base: true },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", fastMode: true, webui: false, base: false },
   { id: "claude-opus-4-6", name: "Claude Opus 4.6", fastMode: true, webui: false, base: false },
@@ -105,13 +132,18 @@ export const SELECTABLE_BASE_MODELS: ReadonlyArray<{ id: string; name: string }>
   (m) => m.base,
 ).map((m) => ({ id: m.id, name: m.name }));
 
+function isOpenAICodexAlias(id: string): boolean {
+  return id.startsWith(OPENAI_CODEX_ALIAS_PREFIX);
+}
+
+function openaiCodexBareId(id: string): string {
+  return id.slice(OPENAI_CODEX_ALIAS_PREFIX.length);
+}
+
 function builtinModel(id: string): PiModel | undefined {
   for (const provider of MODEL_PROVIDERS) {
     const m = getModel(provider, id);
     if (!m) continue;
-    // Endpoint overrides apply here, at the single choke point every
-    // resolution passes through — including clones, whose template is
-    // spread by cloneModel, so an overridden template covers its clones.
     const override = providerBaseUrl(String(m.provider ?? provider));
     return override ? { ...m, baseUrl: override } : m;
   }
@@ -132,7 +164,31 @@ function cloneModel(model: PiModel, id: string, name: string, overrides: Partial
   };
 }
 
+function resolveOpenAICodexAlias(id: string): PiModel | undefined {
+  const entry = REGISTRY_BY_ID.get(id);
+  if (!entry || !isOpenAICodexAlias(id)) return undefined;
+  const bare = openaiCodexBareId(id);
+  if (entry.clone) {
+    const template = getModel("openai-codex", entry.clone.template);
+    return template
+      ? cloneModel(template, bare, entry.name, {
+          contextWindow: entry.clone.contextWindow,
+          maxTokens: entry.clone.maxTokens,
+          cost: {
+            input: entry.clone.input,
+            output: entry.clone.output,
+            cacheRead: entry.clone.input / 10,
+            cacheWrite: entry.clone.cacheWrite ?? 0,
+          },
+        })
+      : undefined;
+  }
+  const model = getModel("openai-codex", bare);
+  return model ? cloneModel(model, bare, entry.name) : undefined;
+}
+
 export function resolveModel(id: string): PiModel | undefined {
+  if (isOpenAICodexAlias(id)) return resolveOpenAICodexAlias(id);
   const entry = REGISTRY_BY_ID.get(id);
   if (entry?.clone) {
     const template = builtinModel(entry.clone.template);
@@ -175,6 +231,8 @@ export function contextTokenBudgetForModel(id: string): number | undefined {
 
 export function modelSupportedByHarness(id: string | undefined, harness: string): boolean {
   if (!id) return false;
+  if (isOpenAICodexAlias(id) || resolveModel(id)?.provider === "openai-codex")
+    return harness === "pi" || harness === "mock";
   if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id))
     return harness === "pi" || harness === "opencode" || harness === "mock";
   if (harness === "pi" || harness === "opencode" || harness === "mock") return Boolean(resolveModel(id));
@@ -202,6 +260,7 @@ export interface ModelProviderAvailability {
   anthropic: boolean;
   openai: boolean;
   openrouter: boolean;
+  "openai-codex"?: boolean;
 }
 
 export function modelServiceable(id: string, providers: ModelProviderAvailability): boolean {
@@ -211,6 +270,7 @@ export function modelServiceable(id: string, providers: ModelProviderAvailabilit
   if (provider === "openai") return providers.openai;
   if (provider === "anthropic") return providers.anthropic;
   if (provider === "openrouter") return providers.openrouter;
+  if (provider === "openai-codex") return providers["openai-codex"] === true;
   return true;
 }
 
@@ -218,7 +278,12 @@ export function serviceableModelIds(ids: readonly string[], providers: ModelProv
   return ids.filter((id) => modelServiceable(id, providers));
 }
 
-export const ALL_PROVIDERS_AVAILABLE: ModelProviderAvailability = { anthropic: true, openai: true, openrouter: true };
+export const ALL_PROVIDERS_AVAILABLE: ModelProviderAvailability = {
+  anthropic: true,
+  openai: true,
+  openrouter: true,
+  "openai-codex": true,
+};
 
 export function modelProviderAvailabilityFor(
   harness: string,

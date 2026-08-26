@@ -425,6 +425,20 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return uploadFileFromRequest(req, res, principal, url.searchParams.get("scope") ?? "");
   }
 
+  const openaiCodexExact =
+    (method === "POST" && pathname === "/api/model-providers/openai-codex/device/start") ||
+    (method === "GET" && pathname === "/api/model-providers/openai-codex/device/status") ||
+    (method === "POST" && pathname === "/api/model-providers/openai-codex/device/cancel") ||
+    (method === "DELETE" && pathname === "/api/model-providers/openai-codex");
+  if (pathname === "/api/model-providers/openai-codex" || pathname.startsWith("/api/model-providers/openai-codex/")) {
+    if (!openaiCodexExact) return json(res, 404, { error: "not_found" });
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const corePath = `/v1/admin/${pathname.slice("/api/".length)}`;
+    return method === "GET" || method === "DELETE"
+      ? forward(req, res, principal, method, corePath)
+      : forward(req, res, principal, method as "POST", corePath, await readBody(req));
+  }
+
   if (WRITES.get(first)?.includes(method)) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const m = method as "POST" | "PUT" | "PATCH" | "DELETE";

@@ -67,8 +67,14 @@ export async function getModelProviders(ctx: ApiCtx): Promise<void> {
 export async function putModelProvider(ctx: ApiCtx): Promise<void> {
   const authorized = await actor(ctx);
   if (!authorized) return;
-  if (!ctx.deps.modelCredentials) return sendJson(ctx.res, 404, { error: "not_found" });
   const provider = ctx.params.provider;
+  if (provider === "openai-codex") {
+    return sendJson(ctx.res, 400, {
+      error: "oauth_required",
+      message: "openai-codex requires device authorization, not an API key",
+    });
+  }
+  if (!ctx.deps.modelCredentials) return sendJson(ctx.res, 404, { error: "not_found" });
   if (!isModelProvider(provider)) return sendJson(ctx.res, 404, { error: "not_found" });
   const apiKey = (ctx.body as { apiKey?: unknown }).apiKey;
   if (typeof apiKey !== "string" || !apiKey.trim()) {

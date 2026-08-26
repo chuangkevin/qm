@@ -45,6 +45,11 @@ test("temporary onboarding covers model credentials, Slack, and OAuth setup", ()
   assert.match(html, /viewLoadedAt\.onboarding = Date\.now\(\)/);
   assert.match(html, /data-onboarding-target="slack"/);
   assert.match(html, /data-onboarding-target="oauth"/);
+  assert.match(html, /id="card-openai-codex"/);
+  assert.match(html, /ChatGPT \/ Codex \(browser\)/);
+  const openaiCodexCard = html.match(/id="card-openai-codex"[\s\S]*?<\/section>/)?.[0] ?? "";
+  assert.ok(openaiCodexCard, "openai-codex card markup exists");
+  assert.doesNotMatch(openaiCodexCard, /type="password"/);
 });
 
 test("admin shell addresses views by path, not a ?view= query param", () => {

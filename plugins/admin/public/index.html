@@ -3500,6 +3500,111 @@
         background: #912018;
       }
 
+      .openai-codex-auth {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .openai-codex-pending {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .openai-codex-pending.hidden {
+        display: none;
+      }
+      .openai-codex-code-label {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.045em;
+        text-transform: uppercase;
+      }
+      .openai-codex-code {
+        margin: 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--subtle);
+        color: var(--ink);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+      .openai-codex-url {
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        min-height: 44px;
+        overflow-x: auto;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+        white-space: normal;
+      }
+      .openai-codex-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .openai-codex-actions button,
+      .openai-codex-actions a.header-button {
+        min-height: 44px;
+        padding: 8px 14px;
+      }
+      .openai-codex-actions .status {
+        flex: 1 1 100%;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      #card-openai-codex .head h2 {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      @media (max-width: 1023px) {
+        .openai-codex-auth,
+        .openai-codex-pending,
+        .openai-codex-actions {
+          max-width: 100%;
+        }
+        .openai-codex-code {
+          font-size: 18px;
+        }
+        .openai-codex-url {
+          overflow-x: auto;
+        }
+      }
+
+      @media (max-width: 767px) {
+        .openai-codex-actions {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .openai-codex-actions button,
+        .openai-codex-actions a.header-button {
+          width: 100%;
+          justify-content: center;
+          white-space: normal;
+        }
+        .openai-codex-code {
+          font-size: 16px;
+          letter-spacing: 0.04em;
+        }
+      }
+
       @media (max-width: 900px) {
         header {
           padding-right: max(14px, env(safe-area-inset-right));
@@ -3927,6 +4032,38 @@
                 <button class="primary" id="onboarding-model-save">Validate and save</button
                 ><button class="danger" id="onboarding-model-delete">Disable this provider</button
                 ><span class="status" id="st-onboarding-model"></span>
+              </div>
+            </section>
+            <section class="card" id="card-openai-codex">
+              <div class="head">
+                <h2>ChatGPT / Codex (browser) <span class="badge muted" id="openai-codex-badge">Not connected</span></h2>
+                <p>
+                  Use ChatGPT/Codex browser authorization. No API key is entered or stored on this card — open the link,
+                  enter the one-time code, then return here.
+                </p>
+              </div>
+              <div class="body openai-codex-auth">
+                <p id="openai-codex-summary">Sign in with ChatGPT/Codex in your browser when you want those models.</p>
+                <div id="openai-codex-pending" class="openai-codex-pending hidden">
+                  <p class="openai-codex-code-label">One-time code</p>
+                  <p class="openai-codex-code" id="openai-codex-user-code"></p>
+                  <a
+                    class="openai-codex-url header-button"
+                    id="openai-codex-verification-url"
+                    href="#"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Open authorization page ↗</a
+                  >
+                </div>
+              </div>
+              <div class="foot openai-codex-actions">
+                <button type="button" class="primary" id="openai-codex-signin">Sign in with browser</button>
+                <button type="button" id="openai-codex-copy-code" class="hidden">Copy code</button>
+                <button type="button" id="openai-codex-cancel" class="hidden">Cancel</button>
+                <button type="button" id="openai-codex-reconnect" class="hidden">Try again</button>
+                <button type="button" class="danger hidden" id="openai-codex-disconnect">Disconnect</button>
+                <span class="status" id="st-openai-codex"></span>
               </div>
             </section>
             <section class="card">
@@ -5653,6 +5790,7 @@
           "hidden",
           view === "onboarding" || view === "governance" || view === "connectors",
         );
+        if (view !== "onboarding") invalidateOpenAICodexPoll();
         if (view === "onboarding") return void loadOnboarding();
         if (view === "governance") return void loadScope();
         if (view === "connectors") return void loadConnectors();
@@ -7065,6 +7203,151 @@
 
       let onboardingModels = {};
       let onboardingModelStatuses = [];
+      let openaiCodexPollTimer = null;
+      let openaiCodexPollGeneration = 0;
+      let openaiCodexLastPollIntervalSeconds = 5;
+      let openaiCodexUserCode = "";
+      function clearOpenAICodexPoll() {
+        if (openaiCodexPollTimer != null) {
+          clearTimeout(openaiCodexPollTimer);
+          openaiCodexPollTimer = null;
+        }
+      }
+      function invalidateOpenAICodexPoll() {
+        openaiCodexPollGeneration += 1;
+        clearOpenAICodexPoll();
+      }
+      function scheduleOpenAICodexPoll(intervalSeconds) {
+        clearOpenAICodexPoll();
+        const sec = Number(intervalSeconds);
+        if (Number.isFinite(sec) && sec > 0) openaiCodexLastPollIntervalSeconds = sec;
+        const waitSec =
+          Number.isFinite(sec) && sec > 0 ? sec : openaiCodexLastPollIntervalSeconds > 0 ? openaiCodexLastPollIntervalSeconds : 5;
+        const generation = openaiCodexPollGeneration;
+        const waitMs = waitSec * 1000;
+        openaiCodexPollTimer = setTimeout(async () => {
+          openaiCodexPollTimer = null;
+          if (generation !== openaiCodexPollGeneration) return;
+          try {
+            const res = await api("GET", "/api/model-providers/openai-codex/device/status");
+            if (generation !== openaiCodexPollGeneration) return;
+            if (!res.ok) {
+              setStatus("st-openai-codex", "Status could not be refreshed. Try again.", "err", true);
+              if (generation === openaiCodexPollGeneration) scheduleOpenAICodexPoll(openaiCodexLastPollIntervalSeconds);
+              return;
+            }
+            renderOpenAICodexStatus(res.data || {});
+          } catch {
+            if (generation !== openaiCodexPollGeneration) return;
+            setStatus("st-openai-codex", "Status could not be refreshed. Try again.", "err", true);
+            if (generation === openaiCodexPollGeneration) scheduleOpenAICodexPoll(openaiCodexLastPollIntervalSeconds);
+          }
+        }, waitMs);
+      }
+      function setOpenAICodexVerificationLink(url) {
+        const el = $("openai-codex-verification-url");
+        const raw = typeof url === "string" ? url.trim() : "";
+        const exact = "https://auth.openai.com/codex/device";
+        const allowed = raw === exact || raw === exact + "/";
+        if (!allowed) {
+          el.setAttribute("href", "#");
+          el.textContent = "Open authorization page ↗";
+          return;
+        }
+        el.setAttribute("href", exact);
+        el.textContent = exact;
+      }
+      function renderOpenAICodexStatus(status) {
+        const phase = status.phase || "absent";
+        const badge = $("openai-codex-badge");
+        const summary = $("openai-codex-summary");
+        const pendingBox = $("openai-codex-pending");
+        const signin = $("openai-codex-signin");
+        const copyBtn = $("openai-codex-copy-code");
+        const cancel = $("openai-codex-cancel");
+        const reconnect = $("openai-codex-reconnect");
+        const disconnect = $("openai-codex-disconnect");
+        const codeEl = $("openai-codex-user-code");
+        const showPending = phase === "pending" || phase === "slow_down";
+        const connected = phase === "connected";
+        const degraded = connected && status.configured === false;
+        const showRetry =
+          phase === "denied" || phase === "expired" || phase === "reconnect_required" || degraded;
+
+        if (typeof status.userCode === "string" && status.userCode) openaiCodexUserCode = status.userCode;
+        if (showPending) {
+          codeEl.textContent = openaiCodexUserCode || "";
+          setOpenAICodexVerificationLink(status.verificationUrl);
+          scheduleOpenAICodexPoll(status.intervalSeconds);
+        } else {
+          invalidateOpenAICodexPoll();
+          openaiCodexUserCode = "";
+          codeEl.textContent = "";
+          setOpenAICodexVerificationLink("");
+        }
+
+        pendingBox.classList.toggle("hidden", !showPending);
+        copyBtn.classList.toggle("hidden", !showPending || !openaiCodexUserCode);
+        cancel.classList.toggle("hidden", !showPending);
+        signin.classList.toggle("hidden", connected || showPending);
+        reconnect.classList.toggle("hidden", !showRetry);
+        disconnect.classList.toggle("hidden", !connected);
+
+        if (connected && status.configured !== false) {
+          badge.textContent = "Connected";
+          badge.className = "badge ok";
+          summary.textContent = "Signed in with ChatGPT/Codex. Disconnect to revoke this authorization.";
+          setStatus("st-openai-codex", "", "");
+        } else if (degraded) {
+          badge.textContent = "Temporarily unavailable";
+          badge.className = "badge warn";
+          summary.textContent =
+            "ChatGPT/Codex authorization is temporarily unavailable. Try again or disconnect.";
+          setStatus("st-openai-codex", "Authorization is temporarily unavailable. Try again.", "err", true);
+        } else if (phase === "pending") {
+          badge.textContent = "Authorization pending";
+          badge.className = "badge warn";
+          summary.textContent = "Authorize in browser — open the link and enter the one-time code.";
+        } else if (phase === "slow_down") {
+          badge.textContent = "Waiting for browser";
+          badge.className = "badge warn";
+          summary.textContent = "Still waiting for browser authorization — polling slowed down.";
+        } else if (phase === "denied") {
+          badge.textContent = "Denied";
+          badge.className = "badge err";
+          summary.textContent = "Denied in the browser. Try again when ready.";
+          setStatus("st-openai-codex", "Authorization was denied.", "err");
+        } else if (phase === "expired") {
+          badge.textContent = "Expired";
+          badge.className = "badge err";
+          summary.textContent = "The one-time code expired. Try again to get a new code.";
+          setStatus("st-openai-codex", "Authorization expired.", "err");
+        } else if (phase === "reconnect_required") {
+          badge.textContent = "Reconnect required";
+          badge.className = "badge warn";
+          summary.textContent = "Reconnect required — sign in again with ChatGPT/Codex in your browser.";
+          setStatus("st-openai-codex", "Reconnect required.", "err");
+        } else {
+          badge.textContent = "Not connected";
+          badge.className = "badge muted";
+          summary.textContent = "Sign in with ChatGPT/Codex in your browser when you want those models.";
+          setStatus("st-openai-codex", "", "");
+        }
+      }
+      async function loadOpenAICodexAuth() {
+        try {
+          const res = await api("GET", "/api/model-providers/openai-codex/device/status");
+          if (!res.ok) {
+            renderOpenAICodexStatus({ phase: "absent", provider: "openai-codex", configured: false });
+            setStatus("st-openai-codex", "ChatGPT authorization status could not be loaded.", "err", true);
+            return;
+          }
+          renderOpenAICodexStatus(res.data || { phase: "absent" });
+        } catch {
+          renderOpenAICodexStatus({ phase: "absent", provider: "openai-codex", configured: false });
+          setStatus("st-openai-codex", "ChatGPT authorization status could not be loaded.", "err", true);
+        }
+      }
       function onboardingBadge(id, text, ready, optional = false) {
         const el = $(id);
         el.textContent = text;
@@ -7128,6 +7411,7 @@
         if (!models.ok || !slack.ok || !catalog.ok || !config.ok) {
           setStatus("st-onboarding-model", "Setup status could not be loaded. Try again.", "err", true);
           renderOnboardingProviderOptions();
+          await loadOpenAICodexAuth();
           return;
         }
         onboardingModelStatuses = models.data.providers || [];
@@ -7175,9 +7459,68 @@
         $("onboarding-oauth-summary").textContent = configured.length
           ? configured.map((item) => connectorName(item.provider)).join(", ") + " available in the web UI."
           : "Add Google, GitHub, Notion, or other OAuth clients to make those connectors available.";
+        await loadOpenAICodexAuth();
         viewLoadedAt.onboarding = Date.now();
       }
       $("onboarding-model-provider").onchange = () => renderOnboardingModelOptions();
+      $("openai-codex-signin").onclick = async () => {
+        $("openai-codex-signin").disabled = true;
+        setStatus("st-openai-codex", "Starting browser authorization…", "saving", true);
+        try {
+          const started = await api("POST", "/api/model-providers/openai-codex/device/start", {});
+          if (!started.ok) {
+            setStatus("st-openai-codex", "Could not start browser authorization. Try again.", "err", true);
+            return;
+          }
+          renderOpenAICodexStatus(started.data || {});
+          setStatus("st-openai-codex", "Authorize in browser, then wait here.", "ok");
+        } catch {
+          setStatus("st-openai-codex", "Could not start browser authorization. Try again.", "err", true);
+        } finally {
+          $("openai-codex-signin").disabled = false;
+        }
+      };
+      $("openai-codex-copy-code").onclick = async () => {
+        const ok = await copyText(openaiCodexUserCode);
+        setStatus("st-openai-codex", ok ? "Code copied." : "Could not copy the code.", ok ? "ok" : "err");
+      };
+      $("openai-codex-cancel").onclick = async () => {
+        invalidateOpenAICodexPoll();
+        $("openai-codex-cancel").disabled = true;
+        try {
+          const cancelled = await api("POST", "/api/model-providers/openai-codex/device/cancel", {});
+          if (!cancelled.ok) {
+            setStatus("st-openai-codex", "Could not cancel authorization. Try again.", "err", true);
+            return;
+          }
+          renderOpenAICodexStatus(cancelled.data || { phase: "absent" });
+          setStatus("st-openai-codex", "Authorization cancelled.", "ok");
+        } catch {
+          setStatus("st-openai-codex", "Could not cancel authorization. Try again.", "err", true);
+        } finally {
+          $("openai-codex-cancel").disabled = false;
+        }
+      };
+      $("openai-codex-reconnect").onclick = () => $("openai-codex-signin").click();
+      $("openai-codex-disconnect").onclick = async () => {
+        if (!confirm("Disconnect ChatGPT/Codex authorization? openai-codex models will stop working until you sign in again."))
+          return;
+        invalidateOpenAICodexPoll();
+        $("openai-codex-disconnect").disabled = true;
+        try {
+          const removed = await api("DELETE", "/api/model-providers/openai-codex");
+          if (!removed.ok) {
+            setStatus("st-openai-codex", "Could not disconnect. Try again.", "err", true);
+            return;
+          }
+          renderOpenAICodexStatus({ phase: "absent", provider: "openai-codex", configured: false });
+          setStatus("st-openai-codex", "Disconnected.", "ok");
+        } catch {
+          setStatus("st-openai-codex", "Could not disconnect. Try again.", "err", true);
+        } finally {
+          $("openai-codex-disconnect").disabled = false;
+        }
+      };
       $("onboarding-model-save").onclick = async () => {
         const provider = $("onboarding-model-provider").value;
         const apiKey = $("onboarding-model-key").value.trim();

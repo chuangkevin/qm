@@ -310,14 +310,19 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   const currentModel =
     runtime &&
     typeof runtime.modelId === "string" &&
-    (currentProvider === "anthropic" || currentProvider === "openai" || currentProvider === "openrouter")
+    (currentProvider === "anthropic" ||
+      currentProvider === "openai" ||
+      currentProvider === "openrouter" ||
+      currentProvider === "openai-codex")
       ? ({ id: runtime.modelId, name: resolvedCurrent!.name, provider: currentProvider } satisfies ModelCatalogEntry)
       : null;
   const modelsFor = (harnessId: string) => {
-    const models = selectableCatalogForHarness(catalog, harnessId);
+    const models = selectableCatalogForHarness(catalog, harnessId).filter((model) =>
+      modelServiceable(model.id, providersFor(harnessId)),
+    );
     if (currentModel && runtime?.harnessId === harnessId && !models.some((model) => model.id === currentModel.id))
       models.push(currentModel);
-    return models.filter((model) => modelServiceable(model.id, providersFor(harnessId)));
+    return models;
   };
   return sendJson(res, 200, {
     scopeId: targetScope,

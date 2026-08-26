@@ -70,6 +70,9 @@ test("admin model credentials are encrypted, write-only, live, and removable", a
         { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai" },
         { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai" },
         { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai" },
+        { id: "openai-codex/gpt-5.6-sol", name: "GPT-5.6 Sol (ChatGPT)", provider: "openai-codex" },
+        { id: "openai-codex/gpt-5.6-terra", name: "GPT-5.6 Terra (ChatGPT)", provider: "openai-codex" },
+        { id: "openai-codex/gpt-5.6-luna", name: "GPT-5.6 Luna (ChatGPT)", provider: "openai-codex" },
         { id: "openrouter/auto", name: "OpenRouter Auto", provider: "openrouter" },
       ],
     });
@@ -442,6 +445,38 @@ test("a stored scope override outside the configured picker refuses web turns; t
     await srv.built.config.setRuntimeSelectionLatest("personal:alice", null);
     const inherited = await turn("web:alice:inherited");
     assert.equal(inherited.status, "queued");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("scope config keeps a saved openai-codex alias in the picker when OAuth is temporarily unavailable", async () => {
+  const srv = start({ openaiApiKey: "sk-platform-only" });
+  try {
+    await srv.built.config.setRuntimeSelectionLatest("org:default-org", {
+      harnessId: "pi",
+      modelId: "openai-codex/gpt-5.6-sol",
+    });
+    srv.built.openaiCodexCredentials.isConfigured = async () => false;
+    assert.equal((await srv.built.modelCredentials.availability())["openai-codex"], false);
+
+    const response = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      runtime: { harnessId: string; modelId: string };
+      baseModelOptions: Array<{ id: string; provider?: string }>;
+      modelsByHarness: Record<string, Array<{ id: string; provider?: string }>>;
+    };
+    assert.equal(body.runtime.modelId, "openai-codex/gpt-5.6-sol");
+    assert.ok(
+      body.baseModelOptions.some((model) => model.id === "openai-codex/gpt-5.6-sol"),
+      "current ChatGPT alias must remain in baseModelOptions while temporarily unserviceable",
+    );
+    assert.ok(
+      body.modelsByHarness.pi!.some((model) => model.id === "openai-codex/gpt-5.6-sol"),
+      "current ChatGPT alias must remain in modelsByHarness.pi while temporarily unserviceable",
+    );
+    assert.ok(!body.baseModelOptions.some((model) => model.id === "openai-codex/gpt-5.6-terra"));
   } finally {
     await srv.close();
   }
