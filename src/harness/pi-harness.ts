@@ -1025,18 +1025,41 @@ function customModelsPath(): string | null {
   return path;
 }
 
+// The openai-codex provider only supports oauth auth in pi-ai (no auth.apiKey
+// handler), so a runtime api_key credential is invisible to checkAuth. Seed the
+// credential store with an oauth-shaped record instead; the access token is
+// re-resolved (and refreshed) by the org credential store on every turn, so the
+// expiry only needs to outlive the turn.
+function jwtExpiryMs(token: string): number | null {
+  const part = token.split(".")[1];
+  if (!part) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as { exp?: number };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 async function buildModelRuntime(keys: ProviderKeys | string): Promise<ModelRuntime> {
   const k: ProviderKeys = typeof keys === "string" ? { anthropic: keys } : keys;
   // Custom providers must exist in the runtime's own registry — a runtime
   // API key alone is invisible to its availability checks. models.json is
   // the sanctioned vocabulary, so materialize one when any are registered.
   const modelsPath = customModelsPath();
+  const credentials = new InMemoryCredentialStore();
   const runtime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
+    credentials,
     modelsPath,
   });
   for (const [provider, apiKey] of Object.entries(k)) {
-    if (apiKey) await runtime.setRuntimeApiKey(provider, apiKey, { allowNetwork: false });
+    if (!apiKey) continue;
+    if (provider === "openai-codex") {
+      const expires = jwtExpiryMs(apiKey) ?? Date.now() + 30 * 60_000;
+      await credentials.modify(provider, async () => ({ type: "oauth" as const, access: apiKey, refresh: "", expires }));
+    } else {
+      await runtime.setRuntimeApiKey(provider, apiKey, { allowNetwork: false });
+    }
   }
   return runtime;
 }
