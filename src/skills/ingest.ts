@@ -37,7 +37,7 @@ export interface IngestPlan {
   counts: Record<string, number>;
 }
 
-function globToRegExp(glob: string): RegExp {
+export function globToRegExp(glob: string): RegExp {
   const re = glob
     .split("**")
     .map((seg) =>
@@ -49,7 +49,7 @@ function globToRegExp(glob: string): RegExp {
     .join(".*");
   return new RegExp(`^${re}$`);
 }
-function matchesAny(path: string, globs: string[] | undefined): boolean {
+export function matchesAny(path: string, globs: string[] | undefined): boolean {
   return !!globs && globs.some((g) => globToRegExp(g).test(path));
 }
 
@@ -85,7 +85,7 @@ function collectAssets(repo: FetchedRepo, skillDir: string): SkillFile[] | null 
   });
 }
 
-function isExcludedPath(path: string, globs: string[] | undefined): boolean {
+export function isExcludedPath(path: string, globs: string[] | undefined): boolean {
   if (!globs?.length) return false;
   if (matchesAny(path, globs)) return true;
   const parts = path.split("/");

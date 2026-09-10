@@ -8,7 +8,9 @@ import { isIP } from "node:net";
 import { errMessage } from "../util/errors.ts";
 import { isPrivateNetworkIp } from "../util/network.ts";
 import { isProbablyBinary } from "./seed.ts";
+import { isExcludedPath, matchesAny } from "./ingest.ts";
 import type { FetchedRepo, RepoFile } from "./ingest.ts";
+import type { PackConfig } from "./normalize.ts";
 import type { SkillPack } from "./skill-pack-store.ts";
 
 export interface SkillPackFetcher {
@@ -206,19 +208,66 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
     }
   }
 
-  async function readTree(root: string): Promise<RepoFile[]> {
+  /**
+   * 把 skillGlobs 轉成 sparse-checkout cone 模式吃得下的目錄清單。
+   * cone 模式只認目錄前綴，所以取每個 glob 第一個含萬用字元的節之前那段。
+   *   "plugins/sara-backend/skills/*"  -> "plugins/sara-backend/skills"
+   *   "skills/**"                      -> "skills"
+   * 整個 pattern 就是萬用字元（"*"、"**"）代表要整個 repo，回空陣列＝不做 sparse。
+   */
+  function sparseDirs(globs: string[] | undefined): string[] {
+    if (!globs || globs.length === 0) return [];
+    const dirs = new Set<string>();
+    for (const g of globs) {
+      const parts = String(g).split("/");
+      const keep: string[] = [];
+      for (const part of parts) {
+        if (part.includes("*") || part.includes("?") || part.includes("[")) break;
+        if (part === "" || part === ".") continue;
+        if (part === "..") return [];   // 路徑往上跳，不安全，放棄 sparse
+        keep.push(part);
+      }
+      if (keep.length === 0) return [];  // 有一個 glob 涵蓋整個 repo，sparse 沒意義
+      dirs.add(keep.join("/"));
+    }
+    return [...dirs];
+  }
+
+  /**
+   * 走訪 checkout 並讀進檔案內容。
+   *
+   * 篩選一定要發生在 readFile 之前——被 exclude 掉的檔案不該讀，也不該計入
+   * maxTotalBytes。原本是整個 repo 讀完才交給 ingest 篩，所以 sara-agents-configuration
+   * 裡跟 skill 無關的檔案照樣把 32MB 上限撐爆，背景 skill-sync 每 5 分鐘失敗一次
+   * （2026-09-10：`pack exceeds max bytes (33554432)`）。
+   */
+  async function readTree(root: string, config?: PackConfig): Promise<RepoFile[]> {
     const files: RepoFile[] = [];
     let totalBytes = 0;
+    const wanted = (rel: string): boolean => {
+      if (isExcludedPath(rel, config?.exclude)) return false;
+      if (!config?.skillGlobs?.length) return true;
+      // skillGlobs 指的是 skill 目錄；目錄本身或它底下的檔案都要留
+      if (matchesAny(rel, config.skillGlobs)) return true;
+      const parts = rel.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        if (matchesAny(parts.slice(0, i).join("/"), config.skillGlobs)) return true;
+      }
+      return false;
+    };
     const walk = async (absDir: string): Promise<void> => {
       for (const ent of await readdir(absDir, { withFileTypes: true })) {
         if (ent.name === ".git") continue;
         if (ent.isSymbolicLink()) continue;
         const abs = join(absDir, ent.name);
+        const rel = relative(root, abs).split(sep).join("/");
         if (ent.isDirectory()) {
+          if (isExcludedPath(rel, config?.exclude)) continue;
           await walk(abs);
           continue;
         }
         if (!ent.isFile()) continue;
+        if (!wanted(rel)) continue;
         if (files.length >= maxFiles) throw new Error(`pack exceeds max files (${maxFiles})`);
         const buf = await readFile(abs);
         totalBytes += buf.length;
@@ -249,10 +298,63 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
       const work = await mkdtemp(join(tmpdir(), "qm-skill-src-"));
       const repoDir = join(work, "repo");
       try {
-        await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
-        await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
+        // --filter=blob:none：只先抓 commit 與 tree，檔案內容等 checkout 需要時才拉。
+        // 配合下面的 sparse-checkout，等於只下載 skillGlobs 涵蓋的那些檔案。
+        // 沒有這一段時 clone 會把整個 repo 的歷史檔案內容抓下來——包含永遠不會匯入的
+        // 大檔——sara-agents-configuration 因此在 60 秒 timeout 內 clone 不完。
+        // 伺服器不支援 partial clone 時退回一般 clone，行為與加這段之前相同。
+        const cone = sparseDirs(pack.config?.skillGlobs);
+        const cloneArgs = ["clone", "--no-checkout", "--quiet"];
+        let partial = cone.length > 0;
+        if (partial) cloneArgs.push("--filter=blob:none");
+        try {
+          await git([...cloneArgs, repo.url, "repo"], work, auth, repo.gitConfig);
+        } catch (e) {
+          if (!partial) throw e;
+          partial = false;
+          await rm(repoDir, { recursive: true, force: true }).catch(() => {});
+          await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+        }
+
+        // 只 checkout skillGlobs 涵蓋的目錄。沒有這一段時 checkout 會展開整個 repo，
+        // 其中與 skill 無關的大檔（範例圖片、音檔）照樣計入 readTree 的 maxTotalBytes，
+        // 讓 pack 因為它根本不會匯入的檔案而爆掉（實例：sara-agents-configuration
+        // 79 MB，其中 ppt-master 的參考素材佔 75 MB，skill 本身只有 3.7 MB）。
+        if (cone.length > 0) {
+          try {
+            await git(["sparse-checkout", "init", "--cone"], repoDir, undefined);
+            await git(["sparse-checkout", "set", ...cone], repoDir, undefined);
+          } catch {
+            // git 太舊或不支援 cone 模式時退回整棵樹，行為與加這段之前相同
+            await git(["sparse-checkout", "disable"], repoDir, undefined).catch(() => {});
+          }
+        }
+        // partial clone 的檔案內容是 checkout 當下才向遠端拉的（promisor fetch），
+        // 所以這一步仍需要憑證；一般 clone 不連網，維持原本不帶憑證的呼叫。
+        try {
+          await git(
+            ["checkout", "--detach", "--quiet", ref || "HEAD"],
+            repoDir,
+            partial ? auth : undefined,
+            partial ? repo.gitConfig : [],
+          );
+        } catch (e) {
+          if (!partial) throw e;
+          // 遠端不支援 promisor fetch 時，改用一般 clone 重來一次
+          await rm(repoDir, { recursive: true, force: true }).catch(() => {});
+          await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+          if (cone.length > 0) {
+            try {
+              await git(["sparse-checkout", "init", "--cone"], repoDir, undefined);
+              await git(["sparse-checkout", "set", ...cone], repoDir, undefined);
+            } catch {
+              await git(["sparse-checkout", "disable"], repoDir, undefined).catch(() => {});
+            }
+          }
+          await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
+        }
         const commit = (await git(["rev-parse", "HEAD"], repoDir, undefined)).trim();
-        const files = await readTree(repoDir);
+        const files = await readTree(repoDir, pack.config);
         return { commit, files };
       } finally {
         await rm(work, { recursive: true, force: true }).catch(() => {});
