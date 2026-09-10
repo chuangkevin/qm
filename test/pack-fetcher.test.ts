@@ -361,6 +361,23 @@ test("skillGlobs 讓 checkout 略過 skill 以外的目錄，大檔不計入大�
   }
 });
 
+test("exclude 掉的大檔不計入大小上限（背景 skill-sync 每 5 分鐘失敗的原因）", async () => {
+  // 2026-09-10：sara-agents-configuration 的 exclude 已經列了 docs/**、bin/** 等等，
+  // 但篩選發生在讀完整棵樹之後，所以那些檔照樣把 32MB 上限撐爆。
+  const limit = 1024 * 1024;
+  const { dir, sha } = makeRepoWithFatSibling(limit * 2);
+  try {
+    const fetcher = createGitFetcher({ allowLocalRepos: true, maxTotalBytes: limit });
+    const pack = src({ url: dir, ref: sha, config: { exclude: ["assets/**"] } });
+    const repo = await fetcher.fetch(pack);
+    const paths = repo.files.map((f) => f.path);
+    assert.ok(paths.includes("skills/demo/SKILL.md"));
+    assert.ok(!paths.some((p) => p.startsWith("assets/")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("沒有 skillGlobs 時維持原本行為：整棵樹照抓，超過上限就報錯", async () => {
   const limit = 1024 * 1024;
   const { dir, sha } = makeRepoWithFatSibling(limit * 2);

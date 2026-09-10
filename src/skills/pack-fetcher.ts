@@ -8,7 +8,9 @@ import { isIP } from "node:net";
 import { errMessage } from "../util/errors.ts";
 import { isPrivateNetworkIp } from "../util/network.ts";
 import { isProbablyBinary } from "./seed.ts";
+import { isExcludedPath, matchesAny } from "./ingest.ts";
 import type { FetchedRepo, RepoFile } from "./ingest.ts";
+import type { PackConfig } from "./normalize.ts";
 import type { SkillPack } from "./skill-pack-store.ts";
 
 export interface SkillPackFetcher {
@@ -231,19 +233,41 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
     return [...dirs];
   }
 
-  async function readTree(root: string): Promise<RepoFile[]> {
+  /**
+   * 走訪 checkout 並讀進檔案內容。
+   *
+   * 篩選一定要發生在 readFile 之前——被 exclude 掉的檔案不該讀，也不該計入
+   * maxTotalBytes。原本是整個 repo 讀完才交給 ingest 篩，所以 sara-agents-configuration
+   * 裡跟 skill 無關的檔案照樣把 32MB 上限撐爆，背景 skill-sync 每 5 分鐘失敗一次
+   * （2026-09-10：`pack exceeds max bytes (33554432)`）。
+   */
+  async function readTree(root: string, config?: PackConfig): Promise<RepoFile[]> {
     const files: RepoFile[] = [];
     let totalBytes = 0;
+    const wanted = (rel: string): boolean => {
+      if (isExcludedPath(rel, config?.exclude)) return false;
+      if (!config?.skillGlobs?.length) return true;
+      // skillGlobs 指的是 skill 目錄；目錄本身或它底下的檔案都要留
+      if (matchesAny(rel, config.skillGlobs)) return true;
+      const parts = rel.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        if (matchesAny(parts.slice(0, i).join("/"), config.skillGlobs)) return true;
+      }
+      return false;
+    };
     const walk = async (absDir: string): Promise<void> => {
       for (const ent of await readdir(absDir, { withFileTypes: true })) {
         if (ent.name === ".git") continue;
         if (ent.isSymbolicLink()) continue;
         const abs = join(absDir, ent.name);
+        const rel = relative(root, abs).split(sep).join("/");
         if (ent.isDirectory()) {
+          if (isExcludedPath(rel, config?.exclude)) continue;
           await walk(abs);
           continue;
         }
         if (!ent.isFile()) continue;
+        if (!wanted(rel)) continue;
         if (files.length >= maxFiles) throw new Error(`pack exceeds max files (${maxFiles})`);
         const buf = await readFile(abs);
         totalBytes += buf.length;
@@ -330,7 +354,7 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
           await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
         }
         const commit = (await git(["rev-parse", "HEAD"], repoDir, undefined)).trim();
-        const files = await readTree(repoDir);
+        const files = await readTree(repoDir, pack.config);
         return { commit, files };
       } finally {
         await rm(work, { recursive: true, force: true }).catch(() => {});
