@@ -274,13 +274,28 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
       const work = await mkdtemp(join(tmpdir(), "qm-skill-src-"));
       const repoDir = join(work, "repo");
       try {
-        await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+        // --filter=blob:none：只先抓 commit 與 tree，檔案內容等 checkout 需要時才拉。
+        // 配合下面的 sparse-checkout，等於只下載 skillGlobs 涵蓋的那些檔案。
+        // 沒有這一段時 clone 會把整個 repo 的歷史檔案內容抓下來——包含永遠不會匯入的
+        // 大檔——sara-agents-configuration 因此在 60 秒 timeout 內 clone 不完。
+        // 伺服器不支援 partial clone 時退回一般 clone，行為與加這段之前相同。
+        const cone = sparseDirs(pack.config?.skillGlobs);
+        const cloneArgs = ["clone", "--no-checkout", "--quiet"];
+        let partial = cone.length > 0;
+        if (partial) cloneArgs.push("--filter=blob:none");
+        try {
+          await git([...cloneArgs, repo.url, "repo"], work, auth, repo.gitConfig);
+        } catch (e) {
+          if (!partial) throw e;
+          partial = false;
+          await rm(repoDir, { recursive: true, force: true }).catch(() => {});
+          await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+        }
 
         // 只 checkout skillGlobs 涵蓋的目錄。沒有這一段時 checkout 會展開整個 repo，
         // 其中與 skill 無關的大檔（範例圖片、音檔）照樣計入 readTree 的 maxTotalBytes，
         // 讓 pack 因為它根本不會匯入的檔案而爆掉（實例：sara-agents-configuration
         // 79 MB，其中 ppt-master 的參考素材佔 75 MB，skill 本身只有 3.7 MB）。
-        const cone = sparseDirs(pack.config?.skillGlobs);
         if (cone.length > 0) {
           try {
             await git(["sparse-checkout", "init", "--cone"], repoDir, undefined);
@@ -290,7 +305,30 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
             await git(["sparse-checkout", "disable"], repoDir, undefined).catch(() => {});
           }
         }
-        await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
+        // partial clone 的檔案內容是 checkout 當下才向遠端拉的（promisor fetch），
+        // 所以這一步仍需要憑證；一般 clone 不連網，維持原本不帶憑證的呼叫。
+        try {
+          await git(
+            ["checkout", "--detach", "--quiet", ref || "HEAD"],
+            repoDir,
+            partial ? auth : undefined,
+            partial ? repo.gitConfig : [],
+          );
+        } catch (e) {
+          if (!partial) throw e;
+          // 遠端不支援 promisor fetch 時，改用一般 clone 重來一次
+          await rm(repoDir, { recursive: true, force: true }).catch(() => {});
+          await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+          if (cone.length > 0) {
+            try {
+              await git(["sparse-checkout", "init", "--cone"], repoDir, undefined);
+              await git(["sparse-checkout", "set", ...cone], repoDir, undefined);
+            } catch {
+              await git(["sparse-checkout", "disable"], repoDir, undefined).catch(() => {});
+            }
+          }
+          await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
+        }
         const commit = (await git(["rev-parse", "HEAD"], repoDir, undefined)).trim();
         const files = await readTree(repoDir);
         return { commit, files };
