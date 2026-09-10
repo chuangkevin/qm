@@ -206,6 +206,31 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
     }
   }
 
+  /**
+   * 把 skillGlobs 轉成 sparse-checkout cone 模式吃得下的目錄清單。
+   * cone 模式只認目錄前綴，所以取每個 glob 第一個含萬用字元的節之前那段。
+   *   "plugins/sara-backend/skills/*"  -> "plugins/sara-backend/skills"
+   *   "skills/**"                      -> "skills"
+   * 整個 pattern 就是萬用字元（"*"、"**"）代表要整個 repo，回空陣列＝不做 sparse。
+   */
+  function sparseDirs(globs: string[] | undefined): string[] {
+    if (!globs || globs.length === 0) return [];
+    const dirs = new Set<string>();
+    for (const g of globs) {
+      const parts = String(g).split("/");
+      const keep: string[] = [];
+      for (const part of parts) {
+        if (part.includes("*") || part.includes("?") || part.includes("[")) break;
+        if (part === "" || part === ".") continue;
+        if (part === "..") return [];   // 路徑往上跳，不安全，放棄 sparse
+        keep.push(part);
+      }
+      if (keep.length === 0) return [];  // 有一個 glob 涵蓋整個 repo，sparse 沒意義
+      dirs.add(keep.join("/"));
+    }
+    return [...dirs];
+  }
+
   async function readTree(root: string): Promise<RepoFile[]> {
     const files: RepoFile[] = [];
     let totalBytes = 0;
@@ -250,6 +275,21 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
       const repoDir = join(work, "repo");
       try {
         await git(["clone", "--no-checkout", "--quiet", repo.url, "repo"], work, auth, repo.gitConfig);
+
+        // 只 checkout skillGlobs 涵蓋的目錄。沒有這一段時 checkout 會展開整個 repo，
+        // 其中與 skill 無關的大檔（範例圖片、音檔）照樣計入 readTree 的 maxTotalBytes，
+        // 讓 pack 因為它根本不會匯入的檔案而爆掉（實例：sara-agents-configuration
+        // 79 MB，其中 ppt-master 的參考素材佔 75 MB，skill 本身只有 3.7 MB）。
+        const cone = sparseDirs(pack.config?.skillGlobs);
+        if (cone.length > 0) {
+          try {
+            await git(["sparse-checkout", "init", "--cone"], repoDir, undefined);
+            await git(["sparse-checkout", "set", ...cone], repoDir, undefined);
+          } catch {
+            // git 太舊或不支援 cone 模式時退回整棵樹，行為與加這段之前相同
+            await git(["sparse-checkout", "disable"], repoDir, undefined).catch(() => {});
+          }
+        }
         await git(["checkout", "--detach", "--quiet", ref || "HEAD"], repoDir, undefined);
         const commit = (await git(["rev-parse", "HEAD"], repoDir, undefined)).trim();
         const files = await readTree(repoDir);
