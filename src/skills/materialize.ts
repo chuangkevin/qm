@@ -370,15 +370,18 @@ export async function staleMaterializedTrees(
   sandbox: Sandbox,
   handle: SandboxHandle,
   resolved: SkillResolution[],
-): Promise<string[]> {
+): Promise<string[]> {   // returns skill dir names (the key ensureSkillTree/layTree use)
   const stale: string[] = [];
   for (const r of resolved) {
     if (!r.skill) continue;
-    const dir = `${SKILLS_DIR}/${safeSkillDirName(r.skill.manifest.name)}`;
+    const name = safeSkillDirName(r.skill.manifest.name);
+    const dir = `${SKILLS_DIR}/${name}`;
     const raw = await readMarker(sandbox, handle, `${dir}/${TREE_MARKER}`, "skills: stale tree probe");
     const prev = treeMarkerState(raw, dir);
     if (!prev) continue;   // never laid here — the agent will lay it when it loads the skill
-    if (prev.hash !== treeHash(r, [])) stale.push(dir);
+    // Bundles are not in hand here, so a tree laid with bundles always looks stale; materializeTree
+    // re-checks the exact hash (with bundles) and is a no-op when nothing changed.
+    if (prev.hash !== treeHash(r, [])) stale.push(name);
   }
   return stale;
 }
