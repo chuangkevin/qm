@@ -358,6 +358,31 @@ async function materializeSkillTreeUnlocked(
   await layFiles(sandbox, handle, entries);
 }
 
+/**
+ * Skills whose tree is already laid in this (thread-scoped) sandbox but whose content changed since.
+ *
+ * The index (SKILL.md bodies) is refreshed on every turn, but a skill's tree (scripts, refs) is only laid
+ * when the agent loads the skill. On a continued thread the agent usually skips loading — it already read
+ * SKILL.md — so it keeps running last week's scripts against this week's SKILL.md. Every skill-pack import
+ * mid-thread was silently ignored that way (gen-data, 2026-09-17: SKILL.md said 0.24.31, validator was 0.24.29).
+ */
+export async function staleMaterializedTrees(
+  sandbox: Sandbox,
+  handle: SandboxHandle,
+  resolved: SkillResolution[],
+): Promise<string[]> {
+  const stale: string[] = [];
+  for (const r of resolved) {
+    if (!r.skill) continue;
+    const dir = `${SKILLS_DIR}/${safeSkillDirName(r.skill.manifest.name)}`;
+    const raw = await readMarker(sandbox, handle, `${dir}/${TREE_MARKER}`, "skills: stale tree probe");
+    const prev = treeMarkerState(raw, dir);
+    if (!prev) continue;   // never laid here — the agent will lay it when it loads the skill
+    if (prev.hash !== treeHash(r, [])) stale.push(dir);
+  }
+  return stale;
+}
+
 export function createSkillMaterializer(advisoryLock?: AdvisoryLock): SkillMaterializer {
   const queue = createKeyedQueue<string>();
   const locked = <T>(handle: SandboxHandle, fn: () => Promise<T>): Promise<T> => {

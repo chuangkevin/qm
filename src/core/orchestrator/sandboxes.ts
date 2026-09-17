@@ -14,7 +14,7 @@ import {
   type ResidentAuthConnector,
 } from "../../credentials/resident-auth.ts";
 import { shq } from "../../util/shell.ts";
-import { createSkillMaterializer, safeSkillDirName } from "../../skills/materialize.ts";
+import { createSkillMaterializer, safeSkillDirName, staleMaterializedTrees } from "../../skills/materialize.ts";
 import type { SkillResolution } from "../../skills/skill-store.ts";
 import { TURN_FILES_DIR } from "../attachments.ts";
 import { errMessage, swallow, swallowAs } from "../../util/errors.ts";
@@ -307,6 +307,10 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       const materializeStart = Date.now();
       try {
         await skillMaterializer.materializeIndex(deps.sandbox, handle, visibleSkills, visibleSkillsForTurn);
+        // A tree the agent laid on an earlier turn of this thread must follow the skill it came from.
+        for (const dir of await staleMaterializedTrees(deps.sandbox, handle, visibleSkills)) {
+          await layTree(handle, dir);
+        }
       } finally {
         emit("skills_materialize", materializeStart, Date.now());
         box.materializeMs = Date.now() - materializeStart;
@@ -320,6 +324,19 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
   for (const r of visibleSkills) {
     if (r.skill) visibleSkillByDir.set(safeSkillDirName(r.skill.manifest.name), r);
   }
+  const layTree = async (handle: SandboxHandle, skillDir: string): Promise<void> => {
+    const r = visibleSkillByDir.get(skillDir);
+    if (!r) return;
+    await skillMaterializer.materializeTree(deps.sandbox, handle, r, [], async () => {
+      const latest = (await visibleSkillsForTurn()).find(
+        (candidate) => candidate.skill && safeSkillDirName(candidate.skill.manifest.name) === skillDir,
+      );
+      if (!latest) return null;
+      const bundles = deps.skillBundles ? await loadActiveBundles(deps.skillBundles, [latest]) : [];
+      return { resolution: latest, bundles };
+    });
+    laidTrees.add(skillDir);
+  };
   const ensureSkillTree = async (skillDir: string): Promise<void> => {
     if (laidTrees.has(skillDir)) return;
     const r = visibleSkillByDir.get(skillDir);
@@ -327,15 +344,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     const start = Date.now();
     try {
       const handle = await provision();
-      await skillMaterializer.materializeTree(deps.sandbox, handle, r, [], async () => {
-        const latest = (await visibleSkillsForTurn()).find(
-          (candidate) => candidate.skill && safeSkillDirName(candidate.skill.manifest.name) === skillDir,
-        );
-        if (!latest) return null;
-        const bundles = deps.skillBundles ? await loadActiveBundles(deps.skillBundles, [latest]) : [];
-        return { resolution: latest, bundles };
-      });
-      laidTrees.add(skillDir);
+      await layTree(handle, skillDir);
       if (r.skill && deps.skills)
         void deps.skills.recordUse(r.skill.id).catch((e) => swallow("orchestrator: skill recordUse", e));
     } catch (err) {
