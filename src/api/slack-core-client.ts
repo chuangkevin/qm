@@ -118,7 +118,20 @@ export interface SlackCoreClientDeps {
 }
 
 const RUN_FALLBACK_POLL_MS = 1_000;
-const RUN_STALL_BUDGET_MS = 300_000;
+// A run that holds a lease and stops moving for this long is presumed stuck.
+const RUN_STALL_BUDGET_MS = envMs("QM_RUN_STALL_BUDGET_MS", 300_000);
+// A run still *pending* is not stuck — it is queued behind another turn on the same thread
+// (a file drop followed by an @mention while a 15-minute skill run is in flight). Give it the
+// full length of a long run before calling it stalled, otherwise every long turn spawns a
+// spurious "taking unusually long" ephemeral for the queued mention.
+const RUN_PENDING_BUDGET_MS = envMs("QM_RUN_PENDING_BUDGET_MS", 1_800_000);
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClient {
   const orgScope: ScopeId = scopeId("org", configOrgId());
@@ -250,9 +263,12 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
               lastMark = mark;
               lastProgressAt = Date.now();
             }
-            if (Date.now() - lastProgressAt >= RUN_STALL_BUDGET_MS) {
+            const budgetMs = run.status === "pending" ? RUN_PENDING_BUDGET_MS : RUN_STALL_BUDGET_MS;
+            if (Date.now() - lastProgressAt >= budgetMs) {
               throw Object.assign(
-                new Error(`run ${runId} made no progress for ${Math.round(RUN_STALL_BUDGET_MS / 1000)}s — giving up`),
+                new Error(
+                  `run ${runId} made no progress for ${Math.round(budgetMs / 1000)}s (status ${run.status}) — giving up`,
+                ),
                 { code: "run_stalled" },
               );
             }
