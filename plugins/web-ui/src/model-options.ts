@@ -38,6 +38,10 @@ const MODEL_CATALOG: Record<string, ModelMeta> = {
     label: "Fable 5",
     buttonLabel: "Fable 5",
   },
+  "gpt-5.5": {
+    label: "GPT-5.5",
+    buttonLabel: "5.5",
+  },
   "gpt-5.6-sol": {
     label: "GPT-5.6 Sol",
     buttonLabel: "5.6 Sol",
@@ -59,7 +63,7 @@ const DEFAULT_PICKER_MODEL_IDS: readonly string[] = [
   "claude-sonnet-5",
   "claude-haiku-4-5",
 ];
-const DEFAULT_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const DEFAULT_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 
 function defaultModelIdsForHarness(harnessId: string): readonly string[] {
   if (harnessId === "codex") return DEFAULT_CODEX_MODEL_IDS;

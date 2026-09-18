@@ -56,7 +56,7 @@ test("runtime resolution falls back to the first approved harness when deploymen
   config.setApprovedHarnesses(["codex"]);
   assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, { harnessId: "pi", modelId: "claude-opus-4-8" }), {
     harnessId: "codex",
-    modelId: "gpt-5.6-sol",
+    modelId: "gpt-5.5",
   });
 });
 

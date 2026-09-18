@@ -276,7 +276,7 @@ test("surface-config filters persisted model choices to the active native harnes
     const response = await fetch(`${srv.base}/v1/surface-config`);
     const config = (await response.json()) as { harnessId: string; baseModel: string; webuiModels: string[] };
     assert.equal(config.harnessId, "codex");
-    assert.equal(config.baseModel, "gpt-5.6-sol");
+    assert.equal(config.baseModel, "gpt-5.5");
     assert.deepEqual(config.webuiModels, ["gpt-5.6-sol"]);
   } finally {
     await srv.close();

@@ -6,7 +6,7 @@ import { isCustomModelId, resolveCustomModel } from "./custom-providers.ts";
 const getModel = getBuiltinModel as unknown as (provider: string, id: string) => Model<Api> | undefined;
 
 export const DEFAULT_AGENT_MODEL_ID = "claude-opus-5";
-export const DEFAULT_CODEX_MODEL_ID = "gpt-5.6-sol";
+export const DEFAULT_CODEX_MODEL_ID = "gpt-5.5";
 export const THINKING_LEVELS = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 export const HARNESS_IDS = ["pi", "opencode", "codex", "claude", "mock"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
@@ -63,6 +63,7 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", fastMode: true, webui: true, base: true },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", fastMode: false, webui: true, base: true },
   { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", fastMode: false, webui: true, base: true, auxiliary: true },
+  { id: "gpt-5.5", name: "GPT-5.5", fastMode: false, webui: true, base: true },
   {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",

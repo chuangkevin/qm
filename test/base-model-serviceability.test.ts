@@ -63,7 +63,7 @@ test("base-model set rejects a model whose provider key is absent (would fail pr
 test("a deployment that declares a provider runs that provider's base model", async () => {
   for (const [modelProvider, key, expected] of [
     ["anthropic", "anthropicApiKey", "claude-opus-5"],
-    ["openai", "openaiApiKey", "gpt-5.6-sol"],
+    ["openai", "openaiApiKey", "gpt-5.5"],
     ["openrouter", "openrouterApiKey", "openrouter/auto"],
   ] as const) {
     const srv = start({ modelProvider, [key]: `deployment-${modelProvider}-key` });

@@ -45,7 +45,7 @@ test("native harnesses reject cross-provider pins and choose their own defaults"
   assert.equal(modelSupportedByHarness("claude-opus-4-8", "codex"), false);
   assert.equal(modelSupportedByHarness("claude-future-9", "claude"), true);
   assert.equal(modelSupportedByHarness("gpt-future-9", "codex"), true);
-  assert.equal(defaultModelForHarness("codex", "claude-opus-4-8"), "gpt-5.6-sol");
+  assert.equal(defaultModelForHarness("codex", "claude-opus-4-8"), "gpt-5.5");
 });
 
 test("the default base model follows the providers a deployment can actually bill", () => {
@@ -59,7 +59,7 @@ test("the default base model follows the providers a deployment can actually bil
     );
   }
   assert.equal(defaultModelForHarness("pi", undefined, onlyProvider("openrouter")), "openrouter/auto");
-  assert.equal(defaultModelForHarness("pi", undefined, onlyProvider("openai")), "gpt-5.6-sol");
+  assert.equal(defaultModelForHarness("pi", undefined, onlyProvider("openai")), "gpt-5.5");
 });
 
 test("provider-blind callers and explicit pins keep the shipped default", () => {
@@ -79,7 +79,7 @@ test("provider-blind callers and explicit pins keep the shipped default", () => 
 
 test("a provider that cannot serve a harness has no default model for it", () => {
   assert.equal(defaultModelForProvider("pi", "openrouter"), "openrouter/auto");
-  assert.equal(defaultModelForProvider("codex", "openai"), "gpt-5.6-sol");
+  assert.equal(defaultModelForProvider("codex", "openai"), "gpt-5.5");
   assert.equal(defaultModelForProvider("claude", "anthropic"), "claude-opus-5");
   assert.equal(defaultModelForProvider("codex", "anthropic"), undefined, "the Codex CLI runs no Anthropic model");
   assert.equal(defaultModelForProvider("claude", "openrouter"), undefined, "the Claude CLI runs no OpenRouter model");
@@ -95,6 +95,7 @@ test("the curated catalog contains only current model families", () => {
       "claude-opus-4-8",
       "claude-sonnet-5",
       "claude-haiku-4-5",
+      "gpt-5.5",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
