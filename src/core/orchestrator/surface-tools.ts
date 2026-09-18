@@ -47,6 +47,8 @@ export interface SpineState {
   crossConversationPosts: number;
   staySilentReason: string | undefined;
   turnUserEntrySeq: number | undefined;
+  /** 這個 turn 最後一次失敗的工具（exit≠0／timeout／isError）；被點名卻選擇 stay_silent 時拿來發一則短通知。 */
+  lastToolFailure?: { tool: string; detail: string };
 }
 
 export interface SurfaceToolsContext {

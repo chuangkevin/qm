@@ -2499,6 +2499,27 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 if (appended.type === "user" && spine.turnUserEntrySeq === undefined)
                   spine.turnUserEntrySeq = appended.seq;
                 if (appended.type === "user") failureUserPayload = undefined;
+                if (appended.type === "tool_result") {
+                  const tr = appended.payload as {
+                    tool?: unknown;
+                    isError?: unknown;
+                    code?: unknown;
+                    timedOut?: unknown;
+                    result?: unknown;
+                    stderr?: unknown;
+                  };
+                  const failed =
+                    tr?.isError === true ||
+                    tr?.timedOut === true ||
+                    (tr?.tool === "execute" && typeof tr.code === "number" && tr.code !== 0);
+                  if (failed) {
+                    const raw = String(tr.stderr || tr.result || "").trim();
+                    spine.lastToolFailure = {
+                      tool: String(tr.tool ?? "?"),
+                      detail: raw.length > 240 ? `…${raw.slice(-240)}` : raw,
+                    };
+                  }
+                }
                 if (appended.type === "tool_call") {
                   toolCalls += 1;
                   if (toolCalls === 1 && input.runId) {
@@ -2702,6 +2723,34 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 console.error(`[orchestrator] addressed turn ended silent after nudge session=${session.id}`);
               }
             }
+          }
+        }
+        // 被點名的 turn 撞到工具失敗後選擇 stay_silent，人在 Slack 什麼都看不到（2026-09-18 建皇：試排服務
+        // 兩次 connection closed，QM 默默結束，Kevin 等了半小時）。失敗至少要講一句，不能靜音。
+        if (
+          input.addressed &&
+          !strictReadOnly &&
+          spine.surfaceOutboundCount === 0 &&
+          spine.staySilentReason !== undefined &&
+          spine.lastToolFailure &&
+          defaultDestination &&
+          deps.deliveries
+        ) {
+          const f = spine.lastToolFailure;
+          const notice = `工具失敗後停下：${f.tool}${f.detail ? `｜${f.detail}` : ""}${spine.staySilentReason ? `｜原因：${spine.staySilentReason}` : ""}`;
+          try {
+            const noticeKey = `post:${session.id}:${randomUUID()}`;
+            await reachEnqueue({
+              deliveries: deps.deliveries,
+              destination: defaultDestination,
+              text: notice.length > 900 ? `${notice.slice(0, 900)}…` : notice,
+              idempotencyKey: noticeKey,
+              provenance: postProvenance(noticeKey),
+            });
+            spine.surfaceOutboundCount += 1;
+            if (input.runId) deps.turnStream?.markSurfacePosted(input.runId);
+          } catch (e) {
+            console.error(`[orchestrator] silent-after-tool-failure notice failed session=${session.id}:`, errMessage(e));
           }
         }
         const totalMs = Date.now() - turnStart;
